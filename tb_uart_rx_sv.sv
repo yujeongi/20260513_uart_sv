@@ -52,9 +52,9 @@ class driver #(
 );
     transaction tr;
     mailbox #(transaction) gen2drv_mbox;
-    virtual Uart_interface uart_vif;
+    virtual uart_rx_interface uart_vif;
     function new(mailbox#(transaction) gen2drv_mbox,
-                 virtual Uart_interface uart_vif);
+                 virtual uart_rx_interface uart_vif);
         this.gen2drv_mbox = gen2drv_mbox;
         this.uart_vif     = uart_vif;
     endfunction
@@ -78,11 +78,11 @@ endclass
 
 class monitor;
     transaction tr;
-    mailbox #(transaction) mon2drv_mbox;
-    virtual Uart_interface uart_vif;
-    function new(mailbox#(transaction) mon2drv_mbox,
-                 virtual Uart_interface uart_vif);
-        this.mon2drv_mbox = mon2drv_mbox;
+    mailbox #(transaction) mon2scb_mbox;
+    virtual uart_rx_interface uart_vif;
+    function new(mailbox#(transaction) mon2scb_mbox,
+                 virtual uart_rx_interface uart_vif);
+        this.mon2scb_mbox = mon2scb_mbox;
         this.uart_vif     = uart_vif;
     endfunction
     task run();
