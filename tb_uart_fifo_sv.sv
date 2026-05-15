@@ -82,7 +82,7 @@ class driver;
             #(`BIT_PERIOD / 2);  //8
             //data bit
             for (int i = 0; i < 8; i++) begin
-                tr.rx = tr.rx_data[i];
+                uart_fifo_vif.rx = tr.rx_data[i];
                 #(`BIT_PERIOD);  //16
             end
             uart_fifo_vif.rx = 1;
@@ -103,16 +103,15 @@ class monitor;
     task run();
         forever begin
             @(negedge uart_fifo_vif.tx);
-            //tr.rx = uart_fifo_vif.rx;
-            //tr.tx = uart_fifo_vif.tx;
-            //#1;  // 시뮬레이터 상에서 값이 반영되도록 wait. 시뮬레이터는 상승엣지 이후에 반영.
-            //tr = new;
-            #(`BIT_PERIOD);  //16
+            tr = new;  // 이거 안하면 오류남
+            #(`BIT_PERIOD);  //16, idle->start
+            $display("%t state start?", $time);
             for (int i = 0; i < 8; i++) begin
+                #(`BIT_PERIOD);  //16, start->data
+                tr.tx = uart_fifo_vif.tx;
                 tr.tx_data[i] = uart_fifo_vif.tx;
-                #(`BIT_PERIOD);  //16
             end
-            #(`BIT_PERIOD);  //16
+            #(`BIT_PERIOD);  //16, data->stop
             tr.debug_print("MON");
             mon2scb_mbox.put(tr);
         end
