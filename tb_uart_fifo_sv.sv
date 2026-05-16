@@ -1,31 +1,32 @@
 `timescale 1ns / 1ps
 `define BIT_PERIOD (100_000_000/9600)*10
 
+
+class transaction;
+    rand bit [7:0] tx_data;
+    bit      [7:0] rx_data;
+    bit            rst;
+    bit            rx;
+    bit            tx;
+    //bit            b_tick;
+    //bit            rx_done;
+    //bit            tx_busy;
+    //bit            tx_start;
+
+    //constraint addr_range {addr < 10;}
+
+    function debug_print(string name);
+        $display("%t : [%s] rx = %d, tx = %d, rx_data = %d, tx_data = %d",
+                 $time, name, rx, tx, rx_data, tx_data);
+    endfunction
+endclass
+
 interface uart_fifo_interface;
     logic clk;
     logic rst;
     logic rx;
     logic tx;
 endinterface
-
-class transaction;
-    rand bit [7:0] rx_data;
-    bit      [7:0] tx_data;
-    bit            rst;
-    bit            rx;
-    bit            tx;
-    bit            b_tick;
-    bit            rx_done;
-    bit            tx_busy;
-
-    //constraint addr_range {addr < 10;}
-
-    function debug_print(string name);
-        $display(
-            "%t : [%s] rx = %d, tx = %d, rx_done = %d, tx_busy = %d, rx_data = %d, tx_data = %d",
-            $time, name, rx, tx, rx_done, tx_busy, rx_data, tx_data);
-    endfunction
-endclass
 
 class generator;
     transaction tr;
@@ -41,11 +42,8 @@ class generator;
     task run(int count);
         repeat (count) begin  // for fork join_any
             tr = new;
-
-            // assertion
-            assert (tr.randomize())  // 발생하지 않으면
-            else $error("[GEN] tr.randomize() error!");
-
+            tr.randomize();
+            #1;
             gen2drv_mbox.put(tr);
             gen2scb_mbox.put(tr);
             tr.debug_print("GEN");
@@ -66,27 +64,28 @@ class driver;
 
     task preset();
         uart_fifo_vif.rst = 1;
-        uart_fifo_vif.rx  = 1;  // idle
+        uart_fifo_vif.rx  = 1;  // 초기값
         repeat (2) @(posedge uart_fifo_vif.clk);
         uart_fifo_vif.rst = 0;
         @(negedge uart_fifo_vif.clk);
     endtask
 
-    task run();
+    task run();  // uart tx
         forever begin
+            tr = new;
             gen2drv_mbox.get(tr);
-            tr.debug_print("DRV");
-
-            // start bit
-            uart_fifo_vif.rx = 0;
-            #(`BIT_PERIOD / 2);  //8
-            //data bit
+            uart_fifo_vif.rx = 0;  // start bit
+            $display("%t start timing", $time);
+            #(`BIT_PERIOD);  //16, idle->start
             for (int i = 0; i < 8; i++) begin
-                uart_fifo_vif.rx = tr.rx_data[i];
-                #(`BIT_PERIOD);  //16
+                $display("%t drive timing", $time);
+                uart_fifo_vif.rx = tr.tx_data[i];  // 쪼개주기
+                #(`BIT_PERIOD);  //16, start->data
             end
-            uart_fifo_vif.rx = 1;
-            #(`BIT_PERIOD * 1.5);  //24
+            tr.debug_print("DRV");
+            uart_fifo_vif.rx = 1;  //stop bit
+            #(`BIT_PERIOD);  //16, data->stop
+            $display("%t stop timing", $time);
         end
     endtask
 endclass
@@ -103,17 +102,19 @@ class monitor;
     task run();
         forever begin
             @(negedge uart_fifo_vif.tx);
-            tr = new;  // 이거 안하면 오류남
-            #(`BIT_PERIOD);  //16, idle->start
-            $display("%t state start?", $time);
+            #1;
+            tr = new;
+            // start bit
+            #(`BIT_PERIOD / 2);  //8, start->data
+            //data bit
             for (int i = 0; i < 8; i++) begin
-                #(`BIT_PERIOD);  //16, start->data
-                tr.tx = uart_fifo_vif.tx;
-                tr.tx_data[i] = uart_fifo_vif.tx;
+                $display("%t monitoring timing", $time);
+                tr.rx_data[i] = uart_fifo_vif.tx;
+                #(`BIT_PERIOD);  //16
             end
-            #(`BIT_PERIOD);  //16, data->stop
             tr.debug_print("MON");
             mon2scb_mbox.put(tr);
+            #(`BIT_PERIOD);  //24?
         end
     endtask
 endclass
@@ -126,8 +127,6 @@ class scoreboard;
     event event_gen_next;
     int total_cnt = 0, pass_cnt = 0, fail_cnt = 0;
 
-    //byte mem[256];  //byte니까 2상태
-
     function new(mailbox#(transaction) mon2scb_mbox,
                  mailbox#(transaction) gen2scb_mbox, event event_gen_next);
         this.mon2scb_mbox   = mon2scb_mbox;
@@ -139,13 +138,16 @@ class scoreboard;
             gen2scb_mbox.get(tr_exp);
             mon2scb_mbox.get(tr_act);
             total_cnt++;
-            if (tr_exp.rx_data == tr_act.tx_data) begin
+            if (tr_exp.tx_data == tr_act.rx_data) begin
                 pass_cnt++;
-                $display("[Data Compare] PASS");
+                $display(
+                    "%t [Data Compare] PASS : EXP_DATA = %d, ACT_DATA = %d",
+                    $time, tr_exp.tx_data, tr_act.rx_data);
             end else begin
                 fail_cnt++;
-                $display("%t [Data Compare] FAIL : rx_data = %d, tx_data = %d",
-                         $time, tr_exp.rx_data, tr_act.tx_data);
+                $display(
+                    "%t [Data Compare] FAIL : EXP_DATA = %d, ACT_DATA = %d",
+                    $time, tr_exp.tx_data, tr_act.rx_data);
             end
             ->event_gen_next;
         end
@@ -166,10 +168,10 @@ class environment;
         gen2drv_mbox = new;
         gen2scb_mbox = new;
         mon2scb_mbox = new;
-        gen = new(gen2drv_mbox, gen2scb_mbox, event_gen_next);
-        drv = new(gen2drv_mbox, uart_fifo_vif);
-        mon = new(mon2scb_mbox, uart_fifo_vif);
-        scb = new(mon2scb_mbox, gen2scb_mbox, event_gen_next);
+        gen          = new(gen2drv_mbox, gen2scb_mbox, event_gen_next);
+        drv          = new(gen2drv_mbox, uart_fifo_vif);
+        mon          = new(mon2scb_mbox, uart_fifo_vif);
+        scb          = new(mon2scb_mbox, gen2scb_mbox, event_gen_next);
     endfunction
     task run();
         //ram interface initial
