@@ -9,21 +9,40 @@ module uart_fifo_sv (
     logic b_tick, rx_done, tx_busy, full, empty;
     logic [7:0] push_data, pop_data;
 
-    fifo_sv U_FIFO (
-        .*,  // clk, rst, full, empty, push_data, pop_data
-        .push(rx_done & (!full)),
-        .pop ((!tx_busy) & (!empty))
-    );
     uart_rx_sv U_UART_RX (
-        .*,  // clk, rst, rx_done, rx
+        .clk    (clk),
+        .rst    (rst),
+        .rx     (rx),
+        .b_tick (b_tick),
+        .rx_done(rx_done),
         .rx_data(push_data)
     );
-    uart_tx_sv U_UART_TX (
-        .*,  // clk, rst, tx_busy, b_tick, tx
-        .tx_start(!empty),
-        .tx_data (pop_data)
+
+    fifo_sv U_FIFO (
+        .clk      (clk),
+        .rst      (rst),
+        .push     (rx_done & (!full)),
+        .pop      ((!tx_busy) & (!empty)),
+        .push_data(push_data),
+        .pop_data (pop_data),
+        .full     (full),
+        .empty    (empty)
     );
-    b_tick_gen U_B_TICK_GEN (.*);  // clk, rst, tick
+
+    uart_tx_sv U_UART_TX (
+        .clk     (clk),
+        .rst     (rst),
+        .tx_start(!empty),
+        .b_tick  (b_tick),
+        .tx_data (pop_data),
+        .tx_busy (tx_busy),
+        .tx      (tx)
+    );
+    b_tick_gen U_B_TICK_GEN (
+        .clk   (clk),
+        .rst   (rst),
+        .b_tick(b_tick)
+    );
 endmodule
 
 module uart_rx_sv (
@@ -128,6 +147,9 @@ module uart_tx_sv (
     logic [3:0] b_tick_cnt_reg, b_tick_cnt_next;
     logic [2:0] bit_cnt_reg, bit_cnt_next;
     logic [7:0] data_reg, data_next;
+    logic tx_reg, tx_next;
+    assign tx = tx_reg;
+
 
     always_ff @(posedge clk, posedge rst) begin
         if (rst) begin
@@ -135,11 +157,13 @@ module uart_tx_sv (
             bit_cnt_reg    <= 0;
             data_reg       <= 0;
             c_state        <= IDLE;
+            tx_reg         <= 1;
         end else begin
             b_tick_cnt_reg <= b_tick_cnt_next;
             bit_cnt_reg    <= bit_cnt_next;
             data_reg       <= data_next;
             c_state        <= n_state;
+            tx_reg         <= tx_next;
         end
     end
 
@@ -149,17 +173,20 @@ module uart_tx_sv (
         data_next       = data_reg;
         n_state         = c_state;
         tx_busy         = 1;
+        tx_next         = tx_reg;
         case (c_state)
             IDLE: begin
-                tx = 1;
+                tx_next = 1;
                 tx_busy = 0;
                 if (tx_start) begin
-                    data_next = tx_data;
-                    n_state   = START;
+                    b_tick_cnt_next = 0;
+                    data_next       = tx_data;
+                    n_state         = START;
                 end
             end
             START: begin
-                tx = 0;  // start bit
+                tx_next = 0;  // start bit
+                tx_busy = 1;
                 if (b_tick) begin
                     if (b_tick_cnt_reg == 15) begin
                         b_tick_cnt_next = 0;
@@ -171,14 +198,14 @@ module uart_tx_sv (
                 end
             end
             DATA: begin
-                tx = data_reg[bit_cnt_reg];
+                tx_next = data_reg[bit_cnt_reg];
                 if (b_tick) begin
                     if (b_tick_cnt_reg == 15) begin
+                        b_tick_cnt_next = 0;
                         if (bit_cnt_reg == 7) begin
-                            b_tick_cnt_next = 0;
+                            bit_cnt_next = 0;
                             n_state = STOP;
                         end else begin
-                            b_tick_cnt_next = 0;
                             bit_cnt_next = bit_cnt_reg + 1;
                         end
                     end else begin
@@ -187,7 +214,7 @@ module uart_tx_sv (
                 end
             end
             STOP: begin
-                tx = 1;  // stop bit
+                tx_next = 1;  // stop bit
                 if (b_tick) begin
                     if (b_tick_cnt_reg == 15) begin
                         n_state = IDLE;
